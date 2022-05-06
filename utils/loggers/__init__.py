@@ -47,6 +47,7 @@ class Loggers():
             'train/box_loss',
             'train/obj_loss',
             'train/cls_loss',  # train loss
+            'train/risk_loss',
             'metrics/precision',
             'metrics/recall',
             'metrics/mAP_0.5',

@@ -36,13 +36,15 @@ class RiskBCEWithLogitsLoss(nn.Module):
     # BCEwithLogitLoss() with reduced missing label effects.
     def __init__(self, pos_weight = None, lambd = 0.1):
         super().__init__()
-        self.loss_fcn = nn.BCEWithLogitsLoss(pos_weight = pos_weight, reduction='none')
+        self.loss_fcn = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
         self.lambd = lambd
 
     def forward(self, pred, true, dr, ndr):
         y_hat = torch.sigmoid(pred)  # prob from logits
-        loss = self.loss_fcn(pred, true) + self.lambd * true * (y_hat * dr + (1 - y_hat) * ndr)
-        return loss.mean()
+        bce_loss = self.loss_fcn(pred, true)
+        risk_loss = self.lambd * true * (y_hat * dr + (1 - y_hat) * ndr)
+        loss = bce_loss + risk_loss
+        return loss.mean(), risk_loss.mean()
 
 
 class FocalLoss(nn.Module):
@@ -108,7 +110,7 @@ class RiskFocalLoss(nn.Module):
         self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss()
         self.gamma = gamma
         self.alpha = alpha
-        self.reduction = loss_fcn.reduction
+        self.reduction = 'mean'
         self.loss_fcn.reduction = 'none'  # required to apply FL to each element
 
     def forward(self, pred, true, risks):
@@ -141,7 +143,7 @@ class ComputeLoss:
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
-        BCEobj = RiskBCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+        BCEobj = RiskBCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device), lambd=h['lambd'])
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
@@ -165,6 +167,7 @@ class ComputeLoss:
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
         lobj = torch.zeros(1, device=self.device)  # object loss
+        lrisk = torch.zeros(1, device=self.device)  # risk loss
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
 
         # Losses
@@ -209,8 +212,9 @@ class ComputeLoss:
             detect_risks = risk_tensor[:, 0].repeat(na, nw, nh, 1).permute(3, 0, 1, 2).to(self.device)
             no_detect_risks = risk_tensor[:, 1].repeat(na, nw, nh, 1).permute(3, 0, 1, 2).to(self.device)
 
-            obji = self.BCEobj(pi[..., 4], tobj, detect_risks, no_detect_risks)
+            obji, risk_loss = self.BCEobj(pi[..., 4], tobj, detect_risks, no_detect_risks)
             lobj += obji * self.balance[i]  # obj loss
+            lrisk += risk_loss * self.balance[i]
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
@@ -221,7 +225,7 @@ class ComputeLoss:
         lcls *= self.hyp['cls']
         bs = tobj.shape[0]  # batch size
 
-        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
+        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls, lrisk)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
