@@ -42,8 +42,8 @@ class RiskBCEWithLogitsLoss(nn.Module):
     def forward(self, pred, true, dr, ndr):
         y_hat = torch.sigmoid(pred)  # prob from logits
         bce_loss = self.loss_fcn(pred, true)
-        risk_loss = self.lambd * true * (y_hat * dr + (1 - y_hat) * ndr)
-        loss = bce_loss + risk_loss
+        risk_loss = true * (y_hat * dr + (1 - y_hat) * ndr)
+        loss = bce_loss + self.lambd * risk_loss
         return loss.mean(), risk_loss.mean()
 
 
